@@ -16,11 +16,14 @@ import org.uncommons.watchmaker.framework.GenerationalEvolutionEngine
 import org.uncommons.watchmaker.framework.selection.RouletteWheelSelection
 import org.uncommons.watchmaker.framework.termination.TargetFitness
 import org.uncommons.watchmaker.framework.termination.ElapsedTime
+import org.uncommons.watchmaker.framework.EvolutionObserver
+import org.uncommons.watchmaker.framework.PopulationData
 
 class CWEvaluator extends FitnessEvaluator[Crossword] {
   override def getFitness(candidate: Crossword, population: java.util.List[_ <: Crossword]): Double = {
     val conflicts = candidate.placedAtOrigin
-    conflicts * (candidate.spec.possibleXPoints.size / candidate.crossed) * (if (candidate.width > candidate.height) candidate.width / candidate.height else candidate.height / candidate.width)
+    // maximize intersections and minimize area
+    conflicts * (candidate.spec.possibleXPoints.size / candidate.crossed) * (candidate.width * candidate.height / candidate.placement.size)
   }
 
   override def isNatural = false
@@ -40,20 +43,12 @@ class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
       val xpoint = spec.possibleXPointsSeq(rng.nextInt(spec.possibleXPointsSeq.length))
       cw.xpoints.get((xpoint.w1.index, xpoint.w2.index)) match {
         case Some(XPoint(c, _, i1, _, i2)) if xpoint.c == c && xpoint.i1 == i1 && xpoint.i2 == i2 => // exists
-        case Some(xp) =>
+        case Some(xp) => // replace other xpoint between the two words
           remove.add(xp); add.add(xpoint)
         case None => add.add(xpoint)
       }
     }
-    var fixed = BitSet()
-    val newXPoints = cw.xpoints.filter { entry =>
-      if (!remove.contains(entry._2) || rng.nextFloat < .5) {
-        fixed += entry._1._1
-        fixed += entry._1._2
-        true
-      } else false
-    }
-
+    val newXPoints = cw.xpoints.filter { entry => !remove.contains(entry._2) || rng.nextFloat < .5 }
     val newXPoints2 = newXPoints ++ add.map { xpoint => ((xpoint.w1.index, xpoint.w2.index), xpoint) }
     new Crossword(spec, newXPoints2)
   }
@@ -187,27 +182,22 @@ object Generator {
     val possibleXPoints = junctions.groupBy(_._1).mapValues(_.flatMap(_._2).toIndexedSeq)
     val spec = new CWSpec(words.toArray, possibleXPoints)
 
-    //    val cw = new CWFactory(spec).generateRandomCandidate(new Random)
-    //    cw.print(cw.placement._1)
-
     val rng = new MersenneTwisterRNG
-    val operators: List[EvolutionaryOperator[Crossword]] = List(
-      new CWCrossover(1),
-      new CWMutation(spec))
+    val operators = List(new CWCrossover(1), new CWMutation(spec))
+    val pipeline = new EvolutionPipeline[Crossword](operators)
+    val engine = new GenerationalEvolutionEngine[Crossword](new CWFactory(spec), pipeline, new CWEvaluator,
+      new RouletteWheelSelection, rng)
 
-    val pipeline = new EvolutionPipeline[Crossword](operators);
+    engine.addEvolutionObserver(new EvolutionObserver[Crossword] {
+      override def populationUpdate(data: PopulationData[_ <: Crossword]) {
+        println("Generation %d: %s".format(data.getGenerationNumber, data.getBestCandidateFitness))
+      }
+    })
 
-    val engine = new GenerationalEvolutionEngine[Crossword](new CWFactory(spec),
-      pipeline,
-      new CWEvaluator,
-      new RouletteWheelSelection,
-      rng)
-    val cw = engine.evolve(100,
-      3,
+    val cw = engine.evolve(200, 3,
       new TargetFitness(0, false), // Continue until a perfect solution is found...
-      new ElapsedTime(10 * 1000))
+      new ElapsedTime(30 * 1000))
     cw.print(cw.placement)
     println(cw.placedAtOrigin + " at origin, crossed at " + cw.crossed + " points, applied " + cw.usedXPoints + " edges")
-
   }
 }
