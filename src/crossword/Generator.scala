@@ -19,18 +19,12 @@ import org.uncommons.watchmaker.framework.termination.ElapsedTime
 
 class CWEvaluator extends FitnessEvaluator[Crossword] {
   override def getFitness(candidate: Crossword, population: java.util.List[_ <: Crossword]): Double = {
-    val conflicts = candidate.placement._2
-    conflicts
+    val conflicts = candidate.placedAtOrigin
+    conflicts * (candidate.spec.possibleXPoints.size / candidate.crossed) * (if (candidate.width > candidate.height) candidate.width / candidate.height else candidate.height / candidate.width)
   }
 
   override def isNatural = false
 }
-
-object Orientation extends Enumeration {
-  type Orientation = Value
-  val OUnknown, OHorizontal, OVertical = Value
-}
-import Orientation._
 
 class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
   override def apply(selectedCandidates: java.util.List[Crossword], rng: Random) = {
@@ -42,7 +36,7 @@ class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
   def mutate(cw: Crossword, rng: Random): Crossword = {
     val remove = mutable.Set[XPoint]()
     val add = mutable.Set[XPoint]()
-    for (i <- 0 to rng.nextInt(5) + 1) {
+    for (i <- 0 to rng.nextInt(5)) {
       val xpoint = spec.possibleXPointsSeq(rng.nextInt(spec.possibleXPointsSeq.length))
       cw.xpoints.get((xpoint.w1.index, xpoint.w2.index)) match {
         case Some(XPoint(c, _, i1, _, i2)) if xpoint.c == c && xpoint.i1 == i1 && xpoint.i2 == i2 => // exists
@@ -53,64 +47,48 @@ class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
     }
     var fixed = BitSet()
     val newXPoints = cw.xpoints.filter { entry =>
-      if (!remove.contains(entry._2) || rng.nextFloat < .7) {
+      if (!remove.contains(entry._2) || rng.nextFloat < .5) {
         fixed += entry._1._1
         fixed += entry._1._2
         true
       } else false
     }
-    val newOrientations = cw.orientations.clone
-    for (i <- cw.orientations.indices) {
-      if (!fixed(i)) newOrientations(i) = OUnknown
-    }
 
-    val newXPoints2 = newXPoints ++ (add.flatMap { xpoint =>
-      val o1 = newOrientations(xpoint.w1.index)
-      val o2 = newOrientations(xpoint.w2.index)
-      if (o1 == OUnknown || o2 == OUnknown || o1 == o2) {
-        // update orientations
-        if (o1 == OUnknown) newOrientations(xpoint.w1.index) = o2 match {
-          case OUnknown => OHorizontal; case OHorizontal => OVertical; case OVertical => OHorizontal
-        }
-        if (o2 == OUnknown) newOrientations(xpoint.w2.index) = newOrientations(xpoint.w1.index) match {
-          case OHorizontal => OVertical; case OVertical => OHorizontal
-        }
-        Some(xpoint)
-      } else None
-    } map { xpoint => ((xpoint.w1.index, xpoint.w2.index), xpoint) })
-
-    new Crossword(spec, newXPoints2, newOrientations)
+    val newXPoints2 = newXPoints ++ add.map { xpoint => ((xpoint.w1.index, xpoint.w2.index), xpoint) }
+    new Crossword(spec, newXPoints2)
   }
 }
 
 class CWCrossover(crossoverPoints: Int) extends AbstractCrossover[Crossword](crossoverPoints) {
   override def mate(parent1: Crossword, parent2: Crossword, numberOfCrossoverPoints: Int, rng: Random) = {
-    null
+    val xpoints1 = parent1.xpoints.toArray.sortBy(_._1)
+    val xpoints2 = parent1.xpoints.toArray.sortBy(_._1)
+    val minLen = xpoints1.length min xpoints2.length
+    val temp = Array.ofDim[((Int, Int), XPoint)](minLen)
+    for (i <- 0 until numberOfCrossoverPoints) {
+      val index = 1 + rng.nextInt(xpoints1.length min xpoints2.length - 1)
+      Array.copy(xpoints1, 0, temp, 0, index)
+      Array.copy(xpoints2, 0, xpoints1, 0, index)
+      Array.copy(temp, 0, xpoints2, 0, index)
+    }
+    val result = new ArrayList[Crossword]
+    result.add(new Crossword(parent1.spec, xpoints1.toMap))
+    result.add(new Crossword(parent2.spec, xpoints2.toMap))
+    result
   }
 }
 
 class CWFactory(val spec: CWSpec) extends AbstractCandidateFactory[Crossword] {
   override def generateRandomCandidate(rng: Random) = {
-    val orientations = Array.fill(spec.words.length)(OUnknown)
     val xpoints = spec.possibleXPoints flatMap {
       // create xpoint with possibility of 70%
       case ((w1, w2), xpoints) if xpoints.nonEmpty && rng.nextFloat < .7 => {
-        val (ow1, ow2) = (orientations(w1), orientations(w2))
-        if (ow1 == OUnknown || ow2 == OUnknown || ow1 == ow2) {
-          // update orientations
-          if (ow1 == OUnknown) orientations(w1) = ow2 match {
-            case OUnknown => OHorizontal; case OHorizontal => OVertical; case OVertical => OHorizontal
-          }
-          if (ow2 == OUnknown) orientations(w2) = orientations(w1) match {
-            case OHorizontal => OVertical; case OVertical => OHorizontal
-          }
-          val index = rng.nextInt(xpoints.length)
-          Some(((w1, w2), xpoints(index)))
-        } else Nil
+        val index = rng.nextInt(xpoints.length)
+        Some(((w1, w2), xpoints(index)))
       }
       case _ => Nil
     }
-    new Crossword(spec, xpoints, orientations)
+    new Crossword(spec, xpoints)
   }
 }
 
@@ -121,72 +99,82 @@ class CWSpec(val words: Array[Word], val possibleXPoints: Map[(Int, Int), Indexe
   val possibleXPointsSeq = possibleXPoints.values.toIndexedSeq.flatten
 }
 
-class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint], val orientations: Array[Orientation]) {
+class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
+  val (placement, (width, height), usedXPoints, crossed, placedAtOrigin) = computePlacement
+
   def print(grid: Map[(Int, Int), Char]) {
-    var (xMin, yMin) = (Int.MaxValue, Int.MaxValue)
-    var (xMax, yMax) = (Int.MinValue, Int.MinValue)
-    grid.keys.foreach {
-      case (x, y) =>
-        xMin = xMin.min(x); yMin = yMin.min(y)
-        xMax = xMax.max(x); yMax = yMax.max(y)
-    }
-    val (xDim, yDim) = (xMax - xMin + 1, yMax - yMin + 1)
-    var result = Array.fill[Char](xDim, yDim)(' ')
-    grid.foreach { case ((x, y), c) => result(x - xMin)(y - yMin) = c }
+    var result = Array.fill[Char](width, height)(' ')
+    grid.foreach { case ((x, y), c) => result(x)(y) = c }
     println(result.map(_.mkString(" ")).mkString("\n"))
   }
 
-  def placement: (Map[(Int, Int), Char], Int) = {
+  def computePlacement = {
     val words = spec.words
     val points4Word = xpoints.toList.map { case ((iw1, iw2), xpoint) => (iw1, xpoint) }.groupBy(_._1).mapValues {
       v => v.map(_._2)
     }
 
-    val grid: mutable.Map[(Int, Int), Char] = mutable.Map.empty
-    var conflicts = 0
-    var placed: Set[Int] = Set.empty
-    def place(w: Word, x0: Int = 0, y0: Int = 0) {
+    val placedChars: mutable.Map[(Int, Int), Char] = mutable.Map.empty
+    var usedXPoints = 0; var crossed = 0; var placedAtOrigin = 0
+    var placed: mutable.Map[Int, Boolean] = mutable.Map.empty
+    def place(w: Word, horizontal: Boolean = true, x0: Int = 0, y0: Int = 0): Boolean = {
       if (!placed.contains(w.index)) {
-        placed += w.index
-        val orientation = orientations(w.index)
-        val xy = orientation match {
-          case OHorizontal | OUnknown => (x0 until x0 + w.chars.length).map((_, y0))
-          case OVertical => (y0 until y0 + w.chars.length).map((x0, _))
+        if (x0 == 0 && y0 == 0) placedAtOrigin += 1
+        val xy = horizontal match {
+          case true => (x0 until x0 + w.chars.length).map((_, y0))
+          case false => (y0 until y0 + w.chars.length).map((x0, _))
         }
-        var conflict = false
-        for ((c, (x, y)) <- w.chars.view.zip(xy)) {
-          grid.get(x, y) match {
-            case Some(existing) if existing == c => // no conflict
-            case Some(existing) => // conflict
-              conflict = true
-              grid((x, y)) = '?'
-            case None => grid((x, y)) = if (x == 0 && y == 0) '#' else c
+        var crossedLocal = 0
+        val conflict = w.chars.view.zip(xy).exists {
+          case (c, (x, y)) => placedChars.get(x, y) match {
+            case Some(existing) if existing == c =>
+              crossedLocal += 1; false // no conflict
+            case Some(existing) => true // conflict
+            case None => false
           }
         }
-        if (conflict) conflicts += 1
-        points4Word.get(w.index).map {
-          _.foreach { xpoint =>
-            val (x1, y1) = orientation match {
-              case OHorizontal => (x0 + xpoint.i1, y0)
-              case OVertical => (x0, y0 + xpoint.i1)
+        if (!conflict) {
+          crossed += crossedLocal
+          placed(w.index) = horizontal
+          for ((c, (x, y)) <- w.chars.view.zip(xy)) placedChars((x, y)) = c
+          points4Word.get(w.index).map {
+            _.foreach { xpoint =>
+              val (x1, y1) = horizontal match {
+                case true => (x0 + xpoint.i1, y0)
+                case false => (x0, y0 + xpoint.i1)
+              }
+              placed.get(xpoint.w2.index) match {
+                case None =>
+                  val (x2, y2) = horizontal match {
+                    case false => (x1 - xpoint.i2, y0)
+                    case true => (x1, y1 - xpoint.i2)
+                  }
+                  if (place(xpoint.w2, !horizontal, x2, y2)) usedXPoints += 1
+                case Some(_) => // already placed
+              }
             }
-            val (x2, y2) = orientations(xpoint.w2.index) match {
-              case OHorizontal => (x1 - xpoint.i2, y0)
-              case OVertical => (x1, y1 - xpoint.i2)
-            }
-            place(xpoint.w2, x2, y2)
           }
-        }
-      }
+          true
+        } else false
+      } else false
     }
     words foreach (place(_))
-    (grid.toMap, conflicts)
+
+    var (xMin, yMin) = (Int.MaxValue, Int.MaxValue)
+    var (xMax, yMax) = (Int.MinValue, Int.MinValue)
+    placedChars.keys.foreach {
+      case (x, y) =>
+        xMin = xMin.min(x); yMin = yMin.min(y)
+        xMax = xMax.max(x); yMax = yMax.max(y)
+    }
+    val (xDim, yDim) = (xMax - xMin + 1, yMax - yMin + 1)
+    (placedChars.map { case ((x, y), c) => ((x - xMin, y - yMin), c) }.toMap, (xDim, yDim), usedXPoints, crossed, placedAtOrigin)
   }
 }
 
 object Generator {
   def main(args: Array[String]) = {
-    val lines = Source.fromFile("/home/ken/Projects/cwc/words").getLines
+    val lines = Source.fromFile("words").getLines
     val words = lines.map(_.trim.toUpperCase).filter(_.nonEmpty).toList.sorted.zipWithIndex.map { case (w, i) => Word(i, w) }
     val junctions = for {
       (w1, wi) <- words.zipWithIndex; w2 <- words.slice(wi + 1, words.length)
@@ -198,19 +186,14 @@ object Generator {
     }
     val possibleXPoints = junctions.groupBy(_._1).mapValues(_.flatMap(_._2).toIndexedSeq)
     val spec = new CWSpec(words.toArray, possibleXPoints)
-    //possibleXPoints foreach (println(_))
 
     //    val cw = new CWFactory(spec).generateRandomCandidate(new Random)
     //    cw.print(cw.placement._1)
 
-    val rng = new MersenneTwisterRNG();
+    val rng = new MersenneTwisterRNG
     val operators: List[EvolutionaryOperator[Crossword]] = List(
-      // new CWCrossover(1),
+      new CWCrossover(1),
       new CWMutation(spec))
-
-    // Mutate the order of cells within individual rows.
-    //                operators.add(new SudokuRowMutation(new PoissonGenerator(2, rng),
-    //                                                    new DiscreteUniformGenerator(1, 8, rng)));
 
     val pipeline = new EvolutionPipeline[Crossword](operators);
 
@@ -218,14 +201,13 @@ object Generator {
       pipeline,
       new CWEvaluator,
       new RouletteWheelSelection,
-      rng);
+      rng)
     val cw = engine.evolve(100,
       3,
       new TargetFitness(0, false), // Continue until a perfect solution is found...
-      new ElapsedTime(5 * 1000));
-    val p = cw.placement
-    cw.print(p._1)
-    println(p._2)
+      new ElapsedTime(10 * 1000))
+    cw.print(cw.placement)
+    println(cw.placedAtOrigin + " at origin, crossed at " + cw.crossed + " points, applied " + cw.usedXPoints + " edges")
 
   }
 }
