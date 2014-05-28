@@ -18,6 +18,7 @@ import org.uncommons.watchmaker.framework.termination.TargetFitness
 import org.uncommons.watchmaker.framework.termination.ElapsedTime
 import org.uncommons.watchmaker.framework.EvolutionObserver
 import org.uncommons.watchmaker.framework.PopulationData
+import org.uncommons.watchmaker.framework.selection.SigmaScaling
 
 class CWEvaluator extends FitnessEvaluator[Crossword] {
   override def getFitness(candidate: Crossword, population: java.util.List[_ <: Crossword]): Double = {
@@ -109,7 +110,7 @@ class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
       v => v.map(_._2)
     }
 
-    val placedChars: mutable.Map[(Int, Int), Char] = mutable.Map.empty
+    val placedChars: mutable.Map[(Int, Int), (Char, Boolean)] = mutable.Map.empty
     var usedXPoints = 0; var crossed = 0; var placedAtOrigin = 0
     var placed: mutable.Map[Int, Boolean] = mutable.Map.empty
     def place(w: Word, horizontal: Boolean = true, x0: Int = 0, y0: Int = 0): Boolean = {
@@ -122,7 +123,7 @@ class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
         var crossedLocal = 0
         val conflict = w.chars.view.zip(xy).exists {
           case (c, (x, y)) => placedChars.get(x, y) match {
-            case Some(existing) if existing == c =>
+            case Some((c1, h1)) if c1 == c && h1 != horizontal =>
               crossedLocal += 1; false // no conflict
             case Some(existing) => true // conflict
             case None => false
@@ -131,7 +132,7 @@ class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
         if (!conflict) {
           crossed += crossedLocal
           placed(w.index) = horizontal
-          for ((c, (x, y)) <- w.chars.view.zip(xy)) placedChars((x, y)) = c
+          for ((c, (x, y)) <- w.chars.view.zip(xy)) placedChars((x, y)) = (c, horizontal)
           points4Word.get(w.index).map {
             _.foreach { xpoint =>
               val (x1, y1) = horizontal match {
@@ -163,7 +164,7 @@ class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
         xMax = xMax.max(x); yMax = yMax.max(y)
     }
     val (xDim, yDim) = (xMax - xMin + 1, yMax - yMin + 1)
-    (placedChars.map { case ((x, y), c) => ((x - xMin, y - yMin), c) }.toMap, (xDim, yDim), usedXPoints, crossed, placedAtOrigin)
+    (placedChars.map { case ((x, y), (c, _)) => ((x - xMin, y - yMin), c) }.toMap, (xDim, yDim), usedXPoints, crossed, placedAtOrigin)
   }
 }
 
@@ -186,7 +187,7 @@ object Generator {
     val operators = List(new CWCrossover(1), new CWMutation(spec))
     val pipeline = new EvolutionPipeline[Crossword](operators)
     val engine = new GenerationalEvolutionEngine[Crossword](new CWFactory(spec), pipeline, new CWEvaluator,
-      new RouletteWheelSelection, rng)
+      new SigmaScaling, rng)
 
     engine.addEvolutionObserver(new EvolutionObserver[Crossword] {
       override def populationUpdate(data: PopulationData[_ <: Crossword]) {
