@@ -24,7 +24,9 @@ class CWEvaluator extends FitnessEvaluator[Crossword] {
   override def getFitness(candidate: Crossword, population: java.util.List[_ <: Crossword]): Double = {
     val conflicts = candidate.placedAtOrigin
     // maximize intersections and minimize area
-    conflicts * (candidate.spec.possibleXPoints.size / (candidate.crossed max 1)) * candidate.width * candidate.height / candidate.placement.size
+    conflicts * (candidate.spec.possibleXPoints.size / (candidate.crossed max 1)) *
+      candidate.width * candidate.height / candidate.placedChars.size +
+      candidate.sideBySide * 1000
   }
 
   override def isNatural = false
@@ -51,8 +53,8 @@ class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
     }
     val newXPoints = cw.xpoints.filter { entry => !remove.contains(entry._2) || rng.nextFloat < .5 }
     val newXPoints2 = newXPoints ++ add.map { xpoint => ((xpoint.w1.index, xpoint.w2.index), xpoint) }
-    val placeFirst = if (rng.nextBoolean) rng.nextInt(spec.words.length) else cw.placeFirst
-    new Crossword(spec, placeFirst, newXPoints2)
+    //val placeFirst = if (rng.nextFloat < 0.3) rng.nextInt(spec.words.length) else cw.placeFirst
+    new Crossword(spec, cw.placeFirst, newXPoints2)
   }
 }
 
@@ -96,8 +98,8 @@ class CWSpec(val words: Array[Word], val possibleXPoints: Map[(Int, Int), Indexe
   val possibleXPointsSeq = possibleXPoints.values.toIndexedSeq.flatten
 }
 
-class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, Int), XPoint]) {
-  val (placement, (width, height), usedXPoints, crossed, placedAtOrigin) = computePlacement
+class Crossword(val spec: CWSpec, val placeFirst: Int, val xpoints: Map[(Int, Int), XPoint]) {
+  val (placedChars, placedWords, (width, height), usedXPoints, crossed, placedAtOrigin, sideBySide) = computePlacement
 
   def print(grid: Map[(Int, Int), Char]) {
     var result = Array.fill[Char](width, height)(' ')
@@ -112,10 +114,10 @@ class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, I
     }
 
     val placedChars: mutable.Map[(Int, Int), (Char, Boolean)] = mutable.Map.empty
+    var placedWords: mutable.Map[Int, (Int, Int, Boolean)] = mutable.Map.empty
     var usedXPoints = 0; var crossed = 0; var placedAtOrigin = 0
-    var placed: mutable.Map[Int, Boolean] = mutable.Map.empty
     def place(w: Word, horizontal: Boolean = true, x0: Int = 0, y0: Int = 0): Boolean = {
-      if (!placed.contains(w.index)) {
+      if (!placedWords.contains(w.index)) {
         if (x0 == 0 && y0 == 0) placedAtOrigin += 1
         val xy = horizontal match {
           case true => (x0 until x0 + w.chars.length).map((_, y0))
@@ -132,7 +134,7 @@ class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, I
         }
         if (!conflict) {
           crossed += crossedLocal
-          placed(w.index) = horizontal
+          placedWords(w.index) = (x0, y0, horizontal)
           for ((c, (x, y)) <- w.chars.view.zip(xy)) placedChars((x, y)) = (c, horizontal)
           points4Word.get(w.index).map {
             _.foreach { xpoint =>
@@ -140,7 +142,7 @@ class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, I
                 case true => (x0 + xpoint.i1, y0)
                 case false => (x0, y0 + xpoint.i1)
               }
-              placed.get(xpoint.w2.index) match {
+              placedWords.get(xpoint.w2.index) match {
                 case None =>
                   val (x2, y2) = horizontal match {
                     case false => (x1 - xpoint.i2, y0)
@@ -155,7 +157,20 @@ class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, I
         } else false
       } else false
     }
-    (words(placeFirst) :: words.toList) foreach (place(_))
+    ( /*words(placeFirst) ::*/ words.toList) foreach (place(_))
+
+    var sideBySide = 0
+    placedWords.foreach {
+      case (wi, (x, y, horizontal)) =>
+        val w = spec.words(wi)
+        (if (horizontal) {
+          if (placedChars.contains(x - 1, y)) sideBySide += 1
+          if (placedChars.contains(x + w.chars.length, y)) sideBySide += 1
+        } else {
+          if (placedChars.contains(x, y - 1)) sideBySide += 1
+          if (placedChars.contains(x, y + w.chars.length)) sideBySide += 1
+        })
+    }
 
     var (xMin, yMin) = (Int.MaxValue, Int.MaxValue)
     var (xMax, yMax) = (Int.MinValue, Int.MinValue)
@@ -165,7 +180,9 @@ class Crossword(val spec: CWSpec, val placeFirst : Int, val xpoints: Map[(Int, I
         xMax = xMax.max(x); yMax = yMax.max(y)
     }
     val (xDim, yDim) = (xMax - xMin + 1, yMax - yMin + 1)
-    (placedChars.map { case ((x, y), (c, _)) => ((x - xMin, y - yMin), c) }.toMap, (xDim, yDim), usedXPoints, crossed, placedAtOrigin)
+    (placedChars.map { case ((x, y), (c, _)) => ((x - xMin, y - yMin), c) }.toMap,
+      placedWords.mapValues { case (x, y, horizontal) => (x - xMin, y - yMin, horizontal) },
+      (xDim, yDim), usedXPoints, crossed, placedAtOrigin, sideBySide)
   }
 }
 
@@ -196,10 +213,12 @@ object Generator {
       }
     })
 
-    val cw = engine.evolve(200, 20,
+    val cws = engine.evolvePopulation(200, 20,
       new TargetFitness(0, false), // Continue until a perfect solution is found...
-      new ElapsedTime(30 * 1000))
-    cw.print(cw.placement)
-    println(cw.placedAtOrigin + " at origin, crossed at " + cw.crossed + " points, applied " + cw.usedXPoints + " edges")
+      new ElapsedTime(30 * 1000)).sortBy(_.getFitness).toList
+    val first = cws.head.getCandidate
+    first.print(first.placedChars)
+    println(first.placedAtOrigin + " at origin, crossed at " + first.crossed + " points, applied " + first.usedXPoints + " edges")
+    if (args.nonEmpty) Writers.toFile(Writers.toHtml(cws.slice(0, 10).map(_.getCandidate), 30), args(0))
   }
 }
