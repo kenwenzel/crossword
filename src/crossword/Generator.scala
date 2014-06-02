@@ -21,12 +21,11 @@ import org.uncommons.watchmaker.framework.PopulationData
 import org.uncommons.watchmaker.framework.selection.SigmaScaling
 
 class CWEvaluator extends FitnessEvaluator[Crossword] {
-  override def getFitness(candidate: Crossword, population: java.util.List[_ <: Crossword]): Double = {
-    val conflicts = candidate.placedAtOrigin
+  override def getFitness(cw: Crossword, population: java.util.List[_ <: Crossword]): Double = {
     // maximize intersections and minimize area
-    conflicts * (candidate.spec.possibleXPoints.size / (candidate.crossed max 1)) *
-      candidate.width * candidate.height / candidate.placedChars.size +
-      candidate.sideBySide * 1000
+    cw.placedAtOrigin * (cw.spec.possibleXPoints.size / (cw.crossed max 1)) *
+      cw.width * cw.height / cw.placedChars.size +
+      cw.sideBySide * 1000
   }
 
   override def isNatural = false
@@ -53,8 +52,7 @@ class CWMutation(val spec: CWSpec) extends EvolutionaryOperator[Crossword] {
     }
     val newXPoints = cw.xpoints.filter { entry => !remove.contains(entry._2) || rng.nextFloat < .5 }
     val newXPoints2 = newXPoints ++ add.map { xpoint => ((xpoint.w1.index, xpoint.w2.index), xpoint) }
-    //val placeFirst = if (rng.nextFloat < 0.3) rng.nextInt(spec.words.length) else cw.placeFirst
-    new Crossword(spec, cw.placeFirst, newXPoints2)
+    new Crossword(spec, newXPoints2)
   }
 }
 
@@ -71,8 +69,8 @@ class CWCrossover(crossoverPoints: Int) extends AbstractCrossover[Crossword](cro
       Array.copy(temp, 0, xpoints2, 0, index)
     }
     val result = new ArrayList[Crossword]
-    result.add(new Crossword(parent1.spec, parent2.placeFirst, xpoints1.toMap))
-    result.add(new Crossword(parent2.spec, parent1.placeFirst, xpoints2.toMap))
+    result.add(new Crossword(parent1.spec, xpoints1.toMap))
+    result.add(new Crossword(parent2.spec, xpoints2.toMap))
     result
   }
 }
@@ -87,7 +85,7 @@ class CWFactory(val spec: CWSpec) extends AbstractCandidateFactory[Crossword] {
       }
       case _ => Nil
     }
-    new Crossword(spec, rng.nextInt(spec.words.length), xpoints)
+    new Crossword(spec, xpoints)
   }
 }
 
@@ -98,7 +96,7 @@ class CWSpec(val words: Array[Word], val possibleXPoints: Map[(Int, Int), Indexe
   val possibleXPointsSeq = possibleXPoints.values.toIndexedSeq.flatten
 }
 
-class Crossword(val spec: CWSpec, val placeFirst: Int, val xpoints: Map[(Int, Int), XPoint]) {
+class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
   val (placedChars, placedWords, (width, height), usedXPoints, crossed, placedAtOrigin, sideBySide) = computePlacement
 
   def print(grid: Map[(Int, Int), Char]) {
@@ -157,7 +155,7 @@ class Crossword(val spec: CWSpec, val placeFirst: Int, val xpoints: Map[(Int, In
         } else false
       } else false
     }
-    ( /*words(placeFirst) ::*/ words.toList) foreach (place(_))
+    words foreach (place(_))
 
     var sideBySide = 0
     placedWords.foreach {
@@ -189,7 +187,7 @@ class Crossword(val spec: CWSpec, val placeFirst: Int, val xpoints: Map[(Int, In
 object Generator {
   def main(args: Array[String]) = {
     val lines = Source.fromFile("words").getLines
-    val words = lines.map(_.trim.toUpperCase).filter(_.nonEmpty).toList.sorted.zipWithIndex.map { case (w, i) => Word(i, w) }
+    val words = lines.map(_.trim.toUpperCase).filter(_.nonEmpty).toList.sorted(Ordering.by((_: String).size).reverse).zipWithIndex.map { case (w, i) => Word(i, w) }
     val junctions = for {
       (w1, wi) <- words.zipWithIndex; w2 <- words.slice(wi + 1, words.length)
     } yield {
