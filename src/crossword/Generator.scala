@@ -213,7 +213,7 @@ object Generator {
 
     val cws = engine.evolvePopulation(200, 20,
       new TargetFitness(0, false), // Continue until a perfect solution is found...
-      new ElapsedTime(30 * 1000)).sortBy(_.getFitness).toList
+      new ElapsedTime(4 * 1000)).sortBy(_.getFitness).toList
     val first = cws.head.getCandidate
     first.print(first.placedChars)
     println(first.placedAtOrigin + " at origin, crossed at " + first.crossed + " points, applied " + first.usedXPoints + " edges")
