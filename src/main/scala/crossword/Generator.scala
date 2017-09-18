@@ -186,7 +186,15 @@ class Crossword(val spec: CWSpec, val xpoints: Map[(Int, Int), XPoint]) {
 
 object Generator {
   def main(args: Array[String]) = {
-    val lines = Source.fromFile("words").getLines
+    var inFile = "words"
+    var outFile: Option[String] = None
+    val it = args.iterator
+    while (it.hasNext) it.next match {
+      case "-i" if it.hasNext => inFile = it.next
+      case "-o" if it.hasNext => outFile = Some(it.next)
+      case _ => System.err.println("Invalid arguments."); System.exit(1)
+    }
+    val lines = Source.fromFile(inFile).getLines
     val words = lines.map(_.trim.toUpperCase).filter(_.nonEmpty).toList.sorted(Ordering.by((_: String).size).reverse).zipWithIndex.map { case (w, i) => Word(i, w) }
     val junctions = for {
       (w1, wi) <- words.zipWithIndex; w2 <- words.slice(wi + 1, words.length)
@@ -213,10 +221,10 @@ object Generator {
 
     val cws = engine.evolvePopulation(200, 20,
       new TargetFitness(0, false), // Continue until a perfect solution is found...
-      new ElapsedTime(4 * 1000)).sortBy(_.getFitness).toList
+      new ElapsedTime(16 * 1000)).sortBy(_.getFitness).toList
     val first = cws.head.getCandidate
     first.print(first.placedChars)
     println(first.placedAtOrigin + " at origin, crossed at " + first.crossed + " points, applied " + first.usedXPoints + " edges")
-    if (args.nonEmpty) Writers.toFile(Writers.toHtml(cws.slice(0, 10).map(_.getCandidate), 30), args(0))
+    outFile.foreach { f => Writers.toFile(Writers.toHtml(cws.slice(0, 10).map(_.getCandidate), 30), f) }
   }
 }
